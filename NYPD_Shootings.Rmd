@@ -1,0 +1,193 @@
+---
+title: "Analysis of New York City Shootings"
+author: "J. Z."
+date: "2024-04-21"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# Introduction
+
+  Firearm-related violence has been increasing scrutinized over the past few decades. It is a topic that is constantly a part of media coverage and is often discussed as a high priority for political and social reform. This analysis seeks to address this high profile issue by discovering trends related to shooting events, in particular for New York City.
+
+### Libraries Used
+
+This document was knit using R Markdown. It requires the following packages:
+
+- "tinytex"
+- "tidyverse"
+- "lubridate"
+
+Please install the above packages if attempting to knit.
+```{r setup_libraries}
+library(tidyverse)
+library(lubridate)
+```
+
+# Data
+  The data used for this analysis comes from the data.gov catalog. It was originally published by the City of New York and it contains an NYPD record of every shooting that took place in New York City from the beginning of 2006 to the end of 2022. Each record includes information about the event, such as the location and time of occurrence, as well as information related to suspect and victim demographics.
+
+```{r read_in_data, message=FALSE}
+
+# Read in NYPD Shooting data from .csv at the catalog.data.gov URL
+file_url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+raw_data <- read_csv(file_url)
+```
+
+### Sources of Bias
+  Race, sex, and other demographic information can be volatile topics when it comes to gun violence. Knowing this, potential bias could exist so that trends can be taken to support a presupposed view of certain demographics. Also, a potential for over corrections exists as well, as data points can be eliminated and trends can be ignored that may be relevant and helpful. These biases can be especially prevalent when not enough data is given to properly account for demographic study.
+  Being aware of the potential for demographic-related bias, and as the data given lacks information such as demographics related to the overall population of NYC, this study elects to only focus on data points and variables unrelated to the demographics of the perpetrators or victims of shooting events.
+
+### Data Cleaning
+
+##### Missing Data
+  The raw data set had empty values populated for the majority of data points related to location descriptions. As such, this analysis does not consider location information for its trend analysis, as the remaining data would potentially not be reflective of the overall data set.
+  
+```{r tidy_missing_data}
+
+# Replace UNKNOWN, (null), and mistyped values with NA
+tidy_data <- raw_data %>% 
+  mutate(across(matches("^PERP|LOCATION_DESC"),
+                ~ifelse(.x %in% c("(null)", "UNKNOWN", "U", "1020",
+                                  "224", "940", "NONE"), NA, .x)))
+
+# Count the number of empty entries
+missing_data <- tidy_data %>%
+  summarize(across(everything(), ~ sum(is.na(.x))))
+missing_data_count <- missing_data %>%
+  slice(1) %>% as.numeric()
+missing_data_sum <- 
+  tibble(variables = colnames(missing_data),
+         missing_count = missing_data_count)
+
+# Plot the number of empty entries
+missing_data_sum %>% ggplot() +
+  geom_point(aes(x = variables, y = missing_count), color = "red", size=5) + 
+  coord_flip() +
+  labs(title = "Missing Entries per Variable", x = NULL, y = "Number of Empty Entries")
+```
+
+### Remaining Data
+
+The remaining variables chosen for analysis relate to the time and date of shooting occurrences, fatality of occurrences, and the NYC borough of occurrences. These variables were downselected, renamed, and regrouped for easy data visualization and transformation.
+
+``` {r tidy_data}
+
+# Select data variables according to what is used for this analysis
+tidy_data <- tidy_data %>% 
+  select(c(OCCUR_DATE, OCCUR_TIME, BORO, STATISTICAL_MURDER_FLAG))
+
+# Rename columns
+new_col <- c(date = "OCCUR_DATE", time = "OCCUR_TIME", boro = "BORO",
+             murder = "STATISTICAL_MURDER_FLAG")
+tidy_data <- tidy_data %>% rename(all_of(new_col))
+
+# Convert date to a date_time format and add in hour, month, and year data as separate variables
+tidy_data <- tidy_data %>% 
+  mutate(date = mdy(date)) %>%
+  mutate(month = month(date, label=TRUE)) %>%
+  mutate(year = year(date)) %>%
+  mutate(hour = hour(time)) %>%
+  mutate(minute = minute(time)) %>%
+  mutate(hour = if_else(minute >= 30, hour+0.5, hour))
+
+# Group data according to the categories that we care about for this analysis
+data_boro <- tidy_data %>%
+  group_by(boro) %>%
+  summarize(shootings = n(),
+            murders = sum(murder))
+data_hour <- tidy_data %>%
+  group_by(hour) %>%
+  summarize(shootings = n(),
+            murders = sum(murder))
+data_month <- tidy_data %>%
+  group_by(month) %>%
+  summarize(shootings = n(),
+            murders = sum(murder))
+```
+
+# Data Visualization and Modeling
+### Relating to NYC Borough
+
+The number of occurrences per NYC borough is shown on the following plot.
+
+```{r plot_data_boro}
+tidy_data %>% ggplot() +
+  geom_bar(aes(x = boro, fill = murder)) + 
+  labs(title = "Shootings by NYC Borough", x = "NYC Borough", y = NULL)
+  
+```
+
+As shown by this plot, the highest number of shooting incidents occurred in Brooklyn and the Bronx, with relatively few incidents occurring in Staten Island.
+
+### Relating to Hour in the Day
+#### Model of Relationship Between Shootings and Deaths
+
+First, the following linear regression model looks at the relationship between shooting occurrences and shooting deaths.
+
+```{r model_deaths}
+
+lin_mod <- lm(murders ~ shootings, data = data_hour)
+summary(lin_mod)
+
+data_hour_pred <- data_hour %>%
+  mutate(pred_lin = predict(lin_mod))
+
+data_hour_pred %>% ggplot() +
+  geom_point(aes(x = shootings, y = murders, color = "blue")) + 
+  geom_point(aes(x = shootings, y = pred_lin, color = "red")) + 
+  labs(title = "Linear Regression - Shootings and Deaths", 
+       x = "Shootings", y = "Deaths", color="Legend\n") + 
+  scale_color_manual(labels = c("Data", "Model"), values=c("blue", "red"))
+  
+```
+
+The linear regression model has an R-squared value of approximately 0.95, indicating a strong linear relationship between shootings and deaths. This is further shown by similarities between the plotted data and the plotted prediction by the linear model.
+
+#### Plot of Shootings by Hour in Day with Polynomial Regression Model
+
+This chart is of the relationship between the hour in the day and the number of shootings.
+
+```{r plot_data_hour}
+tidy_data %>% ggplot() +
+  geom_bar(aes(x = hour)) + 
+  labs(title = "Shootings by Hour in Day", x = "Hour in the Day", y = NULL)
+```
+
+As seen, there is a sharp decrease in shooting events approximately from the hours of 05:00 - 12:00 in the morning. After this, events increase steadily as the day progresses, leading to the maximum number of events occurring between 20:00 - 04:00 at night. This data seems to indicate a polynomial relationship, so a polynomial regression fitting model was used.
+
+```{r model_data_hour}
+poly_mod <- loess(shootings ~ hour, data = data_hour)
+summary(poly_mod)
+data_hour_pred <- data_hour %>%
+  mutate(pred_poly = predict(poly_mod))
+
+data_hour_pred %>% ggplot() +
+  geom_point(aes(x = hour, y = shootings, color = "blue")) + 
+  geom_point(aes(x = hour, y = pred_poly, color = "orange")) + 
+  labs(title = "Polynomial Regression - Shootings and Time of Day", 
+       x = "Time of Day", y = "Shootings", color="Legend\n") + 
+  scale_color_manual(labels = c("Data", "Model"), values=c("blue", "orange"))
+```
+
+As evidenced by the model output and the comparison between the model prediction and the plotted data, the data does have a strong fit to a smoothed curve. This indicates the strength of the observed relationship between time of day and shooting occurrences.
+
+### Relating to Month in the Year
+
+The month in which shooting events occurred is plotted in the following figure.
+
+```{r plot_data_month}
+tidy_data %>% ggplot() +
+  geom_bar(aes(x = month), fill="green") + 
+  labs(title = "Shootings by Month in Year", x = "Month", y = NULL)
+```
+This plot shows that shooting events are at their lowest during the winter months and at their highest in the summer months. Incidents counts in Jan.-Mar. are a little over half of counts during Jun.-Aug. 
+
+# Conclusion
+
+Using the data provided, it is clear that several strong trends exist in NYC shooting events. Incidents were observed to be more common in the boroughs of Brooklyn and the Bronx and less common in Staten Island. Incidents were also observed to be less frequent from the hours of 05:00 - 12:00 and during the winter months, while being more frequent from the hours of 20:00 - 04:00 and during the summer months. These trends will hopefully provide insight into firearm-related occurrences and lend additional understanding to the problem.
+
+```{r info, echo=TRUE}
+sessionInfo()
+```
